@@ -199,19 +199,8 @@ def find_unique_new_pairs(pairs_all: List[Tuple[str]], match_path: Path = None):
 def collate_fn(batch):
     """Custom collate function to pad only to max size within batch"""
     # Find max number of keypoints in this batch
-    # print(f"num of batch: {len(batch)}")
-    # for data in batch:
-    #     print(f"keypoints0: {data['keypoints0'].shape}, keypoints1: {data['keypoints1'].shape}")
-    #     print(f"descriptors0: {data['descriptors0'].shape}, descriptors1: {data['descriptors1'].shape}")
-    #     print(f"scores0: {data['scores0'].shape}, scores1: {data['scores1'].shape}")
-    #     print(f"image0: {data['image0'].shape}, image1: {data['image1'].shape}")
-    #     print(f"image_size0: {data['image_size0'].shape}, image_size1: {data['image_size1'].shape}")
-    #     print("--------------------------------")
-
-
     max_kpts_0 = max(data['keypoints0'].shape[0] for data in batch)
     max_kpts_1 = max(data['keypoints1'].shape[0] for data in batch)
-    # print(max_kpts_0, max_kpts_1)
     
     batched_data = {}
     for key in batch[0].keys():
@@ -243,12 +232,6 @@ def collate_fn(batch):
             # Handle image tensors
             batched_data[key] = torch.stack([data[key] for data in batch])
 
-
-    # print(f"keypoints0: {batched_data['keypoints0'].shape}, keypoints1: {batched_data['keypoints1'].shape}")
-    # print(f"descriptors0: {batched_data['descriptors0'].shape}, descriptors1: {batched_data['descriptors1'].shape}")
-    # print(f"scores0: {batched_data['scores0'].shape}, scores1: {batched_data['scores1'].shape}")
-    # print(f"image0: {batched_data['image0'].shape}, image1: {batched_data['image1'].shape}")
-    # print(f"image_size0: {batched_data['image_size0'].shape}, image_size1: {batched_data['image_size1'].shape}")
     return batched_data
 
 @torch.no_grad()
