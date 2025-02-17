@@ -8,6 +8,7 @@ from functools import partial
 from tqdm import tqdm
 import h5py
 import torch
+import torch.nn.functional as F
 
 from . import matchers, logger
 from .utils.base_model import dynamic_load
@@ -155,7 +156,7 @@ def main(conf: Dict,
          features_ref: Optional[Path] = None,
          batch_size: int = 1,
          overwrite: bool = False) -> Path:
-    print("feature matching main")
+         
     if isinstance(features, Path) or Path(features).exists():
         features_q = features
         if matches is None:
