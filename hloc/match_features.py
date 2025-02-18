@@ -8,6 +8,7 @@ from functools import partial
 from tqdm import tqdm
 import h5py
 import torch
+import torch.nn.functional as F
 
 from . import matchers, logger
 from .utils.base_model import dynamic_load
@@ -153,8 +154,9 @@ def main(conf: Dict,
          export_dir: Optional[Path] = None,
          matches: Optional[Path] = None,
          features_ref: Optional[Path] = None,
+         batch_size: int = 1,
          overwrite: bool = False) -> Path:
-
+         
     if isinstance(features, Path) or Path(features).exists():
         features_q = features
         if matches is None:
@@ -171,7 +173,7 @@ def main(conf: Dict,
 
     if features_ref is None:
         features_ref = features_q
-    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite)
+    match_from_paths(conf, pairs, matches, features_q, features_ref, batch_size, overwrite)
 
     return matches
 
@@ -196,6 +198,43 @@ def find_unique_new_pairs(pairs_all: List[Tuple[str]], match_path: Path = None):
         return pairs_filtered
     return pairs
 
+def collate_fn(batch):
+    """Custom collate function to pad only to max size within batch"""
+    # Find max number of keypoints in this batch
+    max_kpts_0 = max(data['keypoints0'].shape[0] for data in batch)
+    max_kpts_1 = max(data['keypoints1'].shape[0] for data in batch)
+    
+    batched_data = {}
+    for key in batch[0].keys():
+        if key.startswith('keypoints'):
+            # Pad keypoints
+            pad_size = max_kpts_0 if key.endswith('0') else max_kpts_1
+            batched_data[key] = torch.stack([
+                F.pad(data[key], (0, 0, 0, pad_size - data[key].shape[0]))
+                for data in batch
+            ])
+        elif key.startswith('descriptors'):
+            # Pad descriptors
+            pad_size = max_kpts_0 if key.endswith('0') else max_kpts_1
+            batched_data[key] = torch.stack([
+                F.pad(data[key], (0, pad_size - data[key].shape[1]))
+                for data in batch
+            ])
+        elif key.startswith('scores'):
+            # Pad scores
+            pad_size = max_kpts_0 if key.endswith('0') else max_kpts_1
+            batched_data[key] = torch.stack([
+                F.pad(data[key], (0, pad_size - data[key].shape[0]))
+                for data in batch
+            ])
+        elif key.startswith('image_size'):
+            # Stack image sizes without padding
+            batched_data[key] = torch.stack([data[key] for data in batch])
+        else:
+            # Handle image tensors
+            batched_data[key] = torch.stack([data[key] for data in batch])
+
+    return batched_data
 
 @torch.no_grad()
 def match_from_paths(conf: Dict,
@@ -203,6 +242,7 @@ def match_from_paths(conf: Dict,
                      match_path: Path,
                      feature_path_q: Path,
                      feature_path_ref: Path,
+                     batch_size: int = 1,
                      overwrite: bool = False) -> Path:
     logger.info('Matching local features with configuration:'
                 f'\n{pprint.pformat(conf)}')
@@ -226,16 +266,43 @@ def match_from_paths(conf: Dict,
     model = Model(conf['model']).eval().to(device)
 
     dataset = FeaturePairsDataset(pairs, feature_path_q, feature_path_ref)
-    loader = torch.utils.data.DataLoader(
-        dataset, num_workers=5, batch_size=1, shuffle=False, pin_memory=True)
+
+    if batch_size == 1:
+        # create dataloader for single batch
+        loader = torch.utils.data.DataLoader(
+            dataset, num_workers=5, batch_size=1, shuffle=False, pin_memory=True)
+    else:
+        # create dataloader for multiple batches
+        loader = torch.utils.data.DataLoader(
+            dataset, num_workers=5, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     writer_queue = WorkQueue(partial(writer_fn, match_path=match_path), 5)
 
-    for idx, data in enumerate(tqdm(loader, smoothing=.1)):
-        data = {k: v if k.startswith('image')
-                else v.to(device, non_blocking=True) for k, v in data.items()}
-        pred = model(data)
-        pair = names_to_pair(*pairs[idx])
-        writer_queue.put((pair, pred))
+    if batch_size == 1: 
+        for idx, data in enumerate(tqdm(loader, smoothing=.1)):
+            data = {k: v if k.startswith('image')
+                    else v.to(device, non_blocking=True) for k, v in data.items()}
+            pred = model(data)
+            pair = names_to_pair(*pairs[idx])
+            writer_queue.put((pair, pred))
+    else:
+        for batch_idx, data in enumerate(tqdm(loader, smoothing=.1)):
+            # Move data to device
+            data = {k: v if k.startswith('image')
+                    else v.to(device, non_blocking=True) for k, v in data.items()}
+            # Get predictions for batch
+            pred = model(data)
+            # Handle each item in the batch
+            for i in range(len(data['keypoints0'])):
+                # Calculate correct pair index
+                pair_idx = batch_idx * loader.batch_size + i
+                if pair_idx >= len(pairs):  # Handle last incomplete batch
+                    break
+                # Get pair name
+                pair = names_to_pair(*pairs[pair_idx])
+                # Extract single item predictions from batch
+                pred_i = {k: v[i:i+1] for k, v in pred.items()}
+                # Queue the write operation
+                writer_queue.put((pair, pred_i))
     writer_queue.join()
     logger.info('Finished exporting matches.')
 
